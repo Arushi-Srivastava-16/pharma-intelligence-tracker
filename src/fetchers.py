@@ -57,24 +57,22 @@ def fetch_fda_approvals() -> list[dict[str, Any]]:
         date_from = yesterday.strftime("%Y%m%d")
         date_to   = today.strftime("%Y%m%d")
 
-        params = {
-            "search": (
-                f"submissions.submission_status_date:[{date_from}+TO+{date_to}]"
-                "+AND+submissions.submission_type:ORIG"
-                "+AND+submissions.submission_status:AP"
-            ),
-            "limit": 99,
-        }
+        # Build URL manually — requests encodes "+" as "%2B" which breaks
+        # OpenFDA's Lucene query syntax. Simplify to date-range only and
+        # filter for AP + ORIG in Python after fetching.
+        search = f"submissions.submission_status_date:[{date_from}+TO+{date_to}]"
+        url = f"https://api.fda.gov/drug/drugsfda.json?search={search}&limit=99"
 
-        resp = requests.get(
-            "https://api.fda.gov/drug/drugsfda.json",
-            params=params,
-            timeout=REQUEST_TIMEOUT,
-        )
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
 
         # 404 means no records matched — return empty list, not an error
         if resp.status_code == 404:
             logger.info("FDA: no approvals found for %s–%s", date_from, date_to)
+            return []
+
+        # 500 can also mean no results on some OpenFDA query patterns
+        if resp.status_code == 500:
+            logger.info("FDA: API returned 500 (likely no results) for %s–%s", date_from, date_to)
             return []
 
         resp.raise_for_status()

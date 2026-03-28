@@ -54,7 +54,9 @@ def score_text(text: str) -> dict[str, Any]:
         # Pre-slice to 512 chars as a heuristic before tokenization.
         # Chars ≠ tokens, but this prevents obviously oversized inputs.
         # truncation=True at the pipeline level provides the hard token cut.
-        result = _finbert(text[:512])[0]  # top_k=1 → list of one dict → [0]
+        # top_k=1 on a single string returns [[{label, score}]]
+        # so [0] gives the inner list, [0] again gives the dict
+        result = _finbert(text[:512])[0][0]
         return {
             "sentiment_label": result["label"],
             "sentiment_score": round(float(result["score"]), 6),
