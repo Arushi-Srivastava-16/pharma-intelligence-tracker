@@ -94,6 +94,12 @@ def run_pipeline() -> dict[str, int]:
     }
 
 
+def pipeline_entry(request):
+    """HTTP entry point for Cloud Run / Cloud Functions. GCP calls this on every trigger."""
+    result = run_pipeline()
+    return str(result), 200
+
+
 if __name__ == "__main__":
     result = run_pipeline()
     print(result)
