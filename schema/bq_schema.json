@@ -1,0 +1,50 @@
+[
+  {
+    "name": "id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "SHA-256 derived deterministic ID for deduplication"
+  },
+  {
+    "name": "source",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Data source: fda | clinical_trials | news"
+  },
+  {
+    "name": "title",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Title or headline of the item"
+  },
+  {
+    "name": "summary",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Short text summary used for sentiment scoring"
+  },
+  {
+    "name": "published_date",
+    "type": "DATE",
+    "mode": "NULLABLE",
+    "description": "Date the item was published or approved"
+  },
+  {
+    "name": "sentiment_label",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "FinBERT output label: positive | negative | neutral"
+  },
+  {
+    "name": "sentiment_score",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "Confidence score for the sentiment label (0.0 to 1.0)"
+  },
+  {
+    "name": "ingested_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "UTC timestamp when this row was written to BigQuery"
+  }
+]
