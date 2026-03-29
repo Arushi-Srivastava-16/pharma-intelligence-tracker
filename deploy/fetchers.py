@@ -18,6 +18,21 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 15  # seconds — never block the pipeline indefinitely
 
+# Major pharma companies tracked for news sentiment.
+# Each gets its own NewsAPI request so articles are tagged by company.
+PHARMA_COMPANIES = [
+    "Pfizer",
+    "Novartis",
+    "Roche",
+    "AstraZeneca",
+    "MSD",
+    "Sanofi",
+    "Johnson & Johnson",
+    "Novo Nordisk",
+    "Eli Lilly",
+    "Bristol-Myers Squibb",
+]
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -35,9 +50,16 @@ def _make_id(*parts: str) -> str:
 
 
 def _yesterday_and_today() -> tuple[date, date]:
+    """Return (start_date, today).
+
+    Reads LOOKBACK_DAYS from the environment (default 1) so backfills
+    can be run without code changes:
+        LOOKBACK_DAYS=29 python -m src.main
+    """
+    lookback = int(os.environ.get("LOOKBACK_DAYS", "1"))
     today = date.today()
-    yesterday = today - timedelta(days=1)
-    return yesterday, today
+    start = today - timedelta(days=lookback)
+    return start, today
 
 
 # ---------------------------------------------------------------------------
@@ -49,30 +71,22 @@ def fetch_fda_approvals() -> list[dict[str, Any]]:
 
     Endpoint: https://api.fda.gov/drug/drugsfda.json
     Date format: YYYYMMDD  (OpenFDA compact format, NOT ISO 8601)
-    HTTP 404 = no results for the date range — not an error.
+    HTTP 404/500 = no results for the date range — not an error.
     """
     try:
         yesterday, today = _yesterday_and_today()
-        # OpenFDA uses YYYYMMDD in the search filter
         date_from = yesterday.strftime("%Y%m%d")
         date_to   = today.strftime("%Y%m%d")
 
         # Build URL manually — requests encodes "+" as "%2B" which breaks
-        # OpenFDA's Lucene query syntax. Simplify to date-range only and
-        # filter for AP + ORIG in Python after fetching.
+        # OpenFDA's Lucene query syntax.
         search = f"submissions.submission_status_date:[{date_from}+TO+{date_to}]"
         url = f"https://api.fda.gov/drug/drugsfda.json?search={search}&limit=99"
 
         resp = requests.get(url, timeout=REQUEST_TIMEOUT)
 
-        # 404 means no records matched — return empty list, not an error
-        if resp.status_code == 404:
+        if resp.status_code in (404, 500):
             logger.info("FDA: no approvals found for %s–%s", date_from, date_to)
-            return []
-
-        # 500 can also mean no results on some OpenFDA query patterns
-        if resp.status_code == 500:
-            logger.info("FDA: API returned 500 (likely no results) for %s–%s", date_from, date_to)
             return []
 
         resp.raise_for_status()
@@ -91,14 +105,12 @@ def fetch_fda_approvals() -> list[dict[str, Any]]:
             dosage_form  = product.get("dosage_form", "")
             route        = product.get("route", "")
 
-            # Pull the most recent AP submission in this application
             for submission in application.get("submissions", []):
                 if (
                     submission.get("submission_type") == "ORIG"
                     and submission.get("submission_status") == "AP"
                 ):
                     raw_date = submission.get("submission_status_date", "")
-                    # Convert YYYYMMDD → YYYY-MM-DD for BigQuery DATE
                     if len(raw_date) == 8:
                         pub_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
                     else:
@@ -107,15 +119,14 @@ def fetch_fda_approvals() -> list[dict[str, Any]]:
                     records.append({
                         "id": _make_id("fda", app_number, raw_date),
                         "source": "fda",
-                        "title": (
-                            f"{brand_name} ({generic_name}) approved — {sponsor}"
-                        ),
+                        "title": f"{brand_name} ({generic_name}) approved — {sponsor}",
                         "summary": (
                             f"Application {app_number}. "
                             f"{dosage_form}, {route}. "
                             f"Sponsor: {sponsor}."
                         )[:1000],
                         "published_date": pub_date,
+                        "company_name": sponsor if sponsor != "Unknown sponsor" else None,
                     })
                     break  # one record per application
 
@@ -147,7 +158,10 @@ def fetch_clinical_trials() -> list[dict[str, Any]]:
             "format": "json",
             "query.term": "pharmaceutical drug",
             "filter.advanced": f"AREA[LastUpdatePostDate]RANGE[{date_from},{date_to}]",
-            "fields": "NCTId,BriefTitle,BriefSummary,LastUpdatePostDate,OverallStatus,Phase",
+            "fields": (
+                "NCTId,BriefTitle,BriefSummary,LastUpdatePostDate,"
+                "OverallStatus,Phase,LeadSponsorName"
+            ),
             "pageSize": 25,
             "sort": "LastUpdatePostDate:desc",
         }
@@ -164,17 +178,17 @@ def fetch_clinical_trials() -> list[dict[str, Any]]:
         for study in data.get("studies", []):
             protocol = study.get("protocolSection", {})
 
-            id_module     = protocol.get("identificationModule", {})
-            desc_module   = protocol.get("descriptionModule", {})
-            status_module = protocol.get("statusModule", {})
+            id_module       = protocol.get("identificationModule", {})
+            desc_module     = protocol.get("descriptionModule", {})
+            status_module   = protocol.get("statusModule", {})
+            sponsors_module = protocol.get("sponsorsCollaboratorsModule", {})
 
-            nct_id  = id_module.get("nctId", "")
-            title   = id_module.get("briefTitle", "")
-            summary = desc_module.get("briefSummary", "")
-
-            # Date is nested: statusModule → lastUpdatePostDateStruct → date
+            nct_id      = id_module.get("nctId", "")
+            title       = id_module.get("briefTitle", "")
+            summary     = desc_module.get("briefSummary", "")
             date_struct = status_module.get("lastUpdatePostDateStruct", {})
             pub_date    = date_struct.get("date", today.isoformat())
+            sponsor_name = sponsors_module.get("leadSponsor", {}).get("name") or None
 
             if not nct_id:
                 continue
@@ -184,11 +198,9 @@ def fetch_clinical_trials() -> list[dict[str, Any]]:
                 "source": "clinical_trials",
                 "title": title,
                 "summary": summary[:1000],
-                "published_date": pub_date,  # v2 API returns YYYY-MM-DD already
+                "published_date": pub_date,
+                "company_name": sponsor_name,
             })
-
-        # NOTE: v2 returns nextPageToken for pagination; 25 records is fine
-        # for daily volume. Add pagination here if volume grows.
 
         logger.info("ClinicalTrials: fetched %d study records", len(records))
         return records
@@ -203,11 +215,16 @@ def fetch_clinical_trials() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def fetch_pharma_news() -> list[dict[str, Any]]:
-    """Fetch pharma news articles from NewsAPI.
+    """Fetch pharma news articles from NewsAPI, one request per major company.
 
     Endpoint: https://newsapi.org/v2/everything
     Requires NEWS_API_KEY environment variable.
-    Returns [] immediately if the key is not set — not an error.
+    Returns [] immediately if the key is not set.
+
+    Loops over PHARMA_COMPANIES (10 companies, 10 articles each = 100/day max).
+    Each article is tagged with the company name that matched.
+    Inner try/except per company so one failure doesn't kill the rest.
+    Free tier limit: 100 requests/day — 10 requests is well within that.
     """
     try:
         api_key = os.environ.get("NEWS_API_KEY", "")
@@ -216,52 +233,64 @@ def fetch_pharma_news() -> list[dict[str, Any]]:
             return []
 
         yesterday, today = _yesterday_and_today()
-
-        params = {
-            "q": "pharmaceutical drug approval FDA",
-            "from": yesterday.isoformat(),
-            "to": today.isoformat(),
-            "language": "en",
-            "sortBy": "publishedAt",
-            "pageSize": 20,
-            "apiKey": api_key,
-        }
-
-        resp = requests.get(
-            "https://newsapi.org/v2/everything",
-            params=params,
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
         records = []
-        for article in data.get("articles", []):
-            title = article.get("title", "")
+        seen_urls: set[str] = set()  # deduplicate articles returned by multiple company queries
 
-            # Skip deleted/removed articles that NewsAPI returns as placeholders
-            if title == "[Removed]":
-                continue
+        for company in PHARMA_COMPANIES:
+            try:
+                params = {
+                    "q": company,
+                    "from": yesterday.isoformat(),
+                    "to": today.isoformat(),
+                    "language": "en",
+                    "sortBy": "publishedAt",
+                    "pageSize": 10,
+                    "apiKey": api_key,
+                }
 
-            # description is frequently None on the free tier — fall through to content
-            summary = (
-                article.get("description")
-                or article.get("content", "")
-                or ""
-            )
+                resp = requests.get(
+                    "https://newsapi.org/v2/everything",
+                    params=params,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-            url      = article.get("url", "")
-            pub_date = (article.get("publishedAt") or today.isoformat())[:10]
+                for article in data.get("articles", []):
+                    title = article.get("title", "")
+                    if title == "[Removed]":
+                        continue
 
-            records.append({
-                "id": _make_id("news", url),
-                "source": "news",
-                "title": title,
-                "summary": summary[:500],
-                "published_date": pub_date,
-            })
+                    url = article.get("url", "")
+                    if url in seen_urls:
+                        continue  # same article matched multiple companies — keep first
+                    seen_urls.add(url)
 
-        logger.info("News: fetched %d article records", len(records))
+                    summary = (
+                        article.get("description")
+                        or article.get("content", "")
+                        or ""
+                    )
+                    pub_date = (article.get("publishedAt") or today.isoformat())[:10]
+
+                    records.append({
+                        "id":             _make_id("news", url),
+                        "source":         "news",
+                        "title":          title,
+                        "summary":        summary[:500],
+                        "published_date": pub_date,
+                        "company_name":   company,
+                    })
+
+            except Exception as company_exc:
+                logger.warning("News fetch failed for %s: %s", company, company_exc)
+                continue  # one company failure must not kill the rest
+
+        logger.info(
+            "News: fetched %d article records across %d companies",
+            len(records),
+            len(PHARMA_COMPANIES),
+        )
         return records
 
     except Exception as exc:

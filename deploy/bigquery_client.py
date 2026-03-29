@@ -40,17 +40,10 @@ def get_table_ref(client: bigquery.Client) -> str:
 def ensure_table_exists(client: bigquery.Client) -> None:
     table_ref = get_table_ref(client)
 
-    try:
-        client.get_table(table_ref)
-        logger.info("BQ table already exists: %s", table_ref)
-        return
-    except NotFound:
-        pass
-
     with open(_SCHEMA_PATH) as f:
         schema_json = json.load(f)
 
-    schema = [
+    desired_fields = [
         bigquery.SchemaField(
             name=col["name"],
             field_type=col["type"],
@@ -60,16 +53,37 @@ def ensure_table_exists(client: bigquery.Client) -> None:
         for col in schema_json
     ]
 
-    dataset_id = f"{client.project}.{os.environ['BQ_DATASET']}"
     try:
-        client.get_dataset(dataset_id)
+        live_table = client.get_table(table_ref)
     except NotFound:
-        client.create_dataset(bigquery.Dataset(dataset_id))
-        logger.info("BQ dataset created: %s", dataset_id)
+        live_table = None
 
-    table = bigquery.Table(table_ref, schema=schema)
-    client.create_table(table)
-    logger.info("BQ table created: %s", table_ref)
+    if live_table is None:
+        dataset_id = f"{client.project}.{os.environ['BQ_DATASET']}"
+        try:
+            client.get_dataset(dataset_id)
+        except NotFound:
+            client.create_dataset(bigquery.Dataset(dataset_id))
+            logger.info("BQ dataset created: %s", dataset_id)
+
+        table = bigquery.Table(table_ref, schema=desired_fields)
+        client.create_table(table)
+        logger.info("BQ table created: %s", table_ref)
+        return
+
+    live_column_names = {field.name for field in live_table.schema}
+    new_fields = [f for f in desired_fields if f.name not in live_column_names]
+
+    if new_fields:
+        live_table.schema = list(live_table.schema) + new_fields
+        client.update_table(live_table, ["schema"])
+        logger.info(
+            "BQ schema updated: added %d new column(s): %s",
+            len(new_fields),
+            [f.name for f in new_fields],
+        )
+    else:
+        logger.info("BQ schema is current: %s", table_ref)
 
 
 def get_existing_ids(client: bigquery.Client, ids: list[str]) -> set[str]:
