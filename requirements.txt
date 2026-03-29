@@ -1,6 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 google-cloud-bigquery==3.25.0
 transformers==4.38.0
-torch==2.6.0
+torch==2.6.0+cpu
 requests==2.31.0
 python-dotenv==1.0.1
 functions-framework==3.5.0
