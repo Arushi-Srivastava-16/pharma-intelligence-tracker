@@ -1,51 +1,126 @@
+<div align="center">
+
 # Pharma Intelligence Tracker
 
-## Business Case
+**A production-deployed NLP pipeline that monitors FDA approvals, clinical trials, and pharma news daily — scoring every signal with FinBERT and surfacing high-impact events in a live dashboard.**
 
-Pharma analysts spend hours manually reading fragmented sources — FDA approval notices, clinical trial updates, and market news — to identify high-signal events. This pipeline automates that process: it ingests data from three sources daily, scores each item using a domain-specific NLP model (FinBERT), and surfaces high-sentiment events in a live dashboard. A 2-hour manual review becomes a 30-second check.
+[![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://www.python.org/)
+[![FinBERT](https://img.shields.io/badge/NLP-FinBERT-orange?style=flat-square)](https://huggingface.co/ProsusAI/finbert)
+[![GCP](https://img.shields.io/badge/GCP-Cloud%20Run-4285F4?style=flat-square&logo=google-cloud)](https://cloud.google.com/run)
+[![BigQuery](https://img.shields.io/badge/BigQuery-Data%20Warehouse-4285F4?style=flat-square&logo=google-cloud)](https://cloud.google.com/bigquery)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-## Architecture
+[**Live Dashboard →**](https://datastudio.google.com/s/h_f6JcGJl1w) · [**Architecture**](#%EF%B8%8F-architecture) · [**Local Setup**](#-local-setup)
+
+</div>
+
+---
+
+## 💼 Business Case
+
+Pharma analysts spend hours manually reading fragmented sources — FDA approval notices, clinical trial updates, and market news — to identify high-signal events. This pipeline automates that process entirely.
+
+Every day at 08:00 UTC, three public APIs are queried, every record is scored by **FinBERT** for sentiment (positive / negative / neutral), deduplicated results are inserted into **BigQuery**, and a **Looker Studio** dashboard surfaces the highest-impact signals automatically.
+
+> A 2-hour manual review becomes a 30-second check.
+
+---
+
+## 📊 Live Dashboard
+
+**[→ Open Looker Studio Dashboard](https://datastudio.google.com/s/h_f6JcGJl1w)**
+
+The dashboard shows:
+- Daily FDA drug approvals scored by sentiment
+- Clinical trial updates (phase changes, results) ranked by signal strength
+- News sentiment trends across pharma companies and drug names
+- FinBERT confidence distribution across data sources
+
+---
+
+## 🏗️ Architecture
 
 ```
-OpenFDA API  ─┐
-ClinicalTrials.gov API  ─┤──► fetchers.py ──► sentiment.py (FinBERT) ──► BigQuery ──► Looker Studio
-NewsAPI  ─────┘                                                              ▲
-                                                               Cloud Scheduler → Cloud Run
+┌──────────────────────────────────────────────────────────────┐
+│               Google Cloud Scheduler (08:00 UTC)              │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ HTTP trigger
+┌──────────────────────────────▼───────────────────────────────┐
+│                    Google Cloud Run                           │
+│                  (pharma-pipeline, us-central1)               │
+│                                                              │
+│  ┌────────────┐  ┌────────────────────┐  ┌────────────────┐  │
+│  │ OpenFDA    │  │ ClinicalTrials.gov │  │   NewsAPI      │  │
+│  │ fetcher.py │  │ fetcher.py         │  │ fetcher.py     │  │
+│  └─────┬──────┘  └─────────┬──────────┘  └───────┬────────┘  │
+│        └──────────────────┬┘                     │           │
+│                           ▼                      │           │
+│              ┌────────────────────────┐           │           │
+│              │  sentiment.py          │◄──────────┘           │
+│              │  ProsusAI/finbert      │                       │
+│              │  (module-level load)   │                       │
+│              └────────────┬───────────┘                       │
+│                           │                                   │
+│              ┌────────────▼───────────┐                       │
+│              │  bigquery_client.py    │                       │
+│              │  dedup → insert_rows   │                       │
+│              └────────────────────────┘                       │
+└──────────────────────────────────────────────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  Google BigQuery     │
+                    │  pharma_intelligence │
+                    │  .drug_signals       │
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  Looker Studio       │
+                    │  Live Dashboard      │
+                    └─────────────────────┘
 ```
 
-**Data flow:**
-1. Cloud Scheduler triggers the Cloud Run service daily at 08:00 UTC
-2. The service calls three public APIs (OpenFDA, ClinicalTrials.gov, NewsAPI)
-3. Each record is scored by FinBERT (`ProsusAI/finbert`) for sentiment (positive / negative / neutral)
-4. Deduplicated results are inserted into BigQuery
-5. Looker Studio reads from BigQuery for the live dashboard
+---
 
-## Live Dashboard
+## ✨ Features
 
-_Coming soon — pipeline has been running since 2026-03-29. Dashboard will be published once sufficient data has accumulated (~1 week)._
+| Feature | Detail |
+|---|---|
+| 🔬 **Multi-Source Ingestion** | OpenFDA, ClinicalTrials.gov v2 API, NewsAPI — 3 sources in one run |
+| 🧠 **FinBERT Sentiment** | `ProsusAI/finbert` — domain-specific finance/pharma sentiment (positive / negative / neutral) |
+| 🔁 **Daily Automation** | Cloud Scheduler triggers Cloud Run every day at 08:00 UTC |
+| 🚫 **Deduplication** | Pre-insert ID check against BigQuery prevents duplicate rows |
+| 📊 **Live Dashboard** | Looker Studio connected directly to BigQuery |
+| 🐳 **Model Baked In** | FinBERT (~440MB) downloaded at build time — no HuggingFace cold starts |
 
-## Deployed Infrastructure
+---
+
+## 🚀 Deployed Infrastructure
 
 | Component | Detail |
 |-----------|--------|
-| Cloud Run service | `pharma-pipeline` — `us-central1` |
-| Service URL | `https://pharma-pipeline-138103340271.us-central1.run.app` |
-| Scheduler | `daily-pharma-pipeline` — every day at 08:00 UTC |
-| BigQuery | `pharma-intelligence-491514.pharma_intelligence.drug_signals` |
+| **Cloud Run** | `pharma-pipeline` — `us-central1` |
+| **Service URL** | `https://pharma-pipeline-138103340271.us-central1.run.app` |
+| **Scheduler** | `daily-pharma-pipeline` — every day at 08:00 UTC |
+| **BigQuery** | `pharma-intelligence-491514.pharma_intelligence.drug_signals` |
+| **Dashboard** | [Looker Studio](https://datastudio.google.com/s/h_f6JcGJl1w) |
 
-## Tech Stack
+---
+
+## 🔬 Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| Language | Python 3.11 |
-| NLP Model | FinBERT (`ProsusAI/finbert`) via HuggingFace Transformers |
-| Data warehouse | Google BigQuery |
-| Compute | Google Cloud Run (Dockerfile-based, 2GB memory) |
-| Scheduler | Google Cloud Scheduler |
-| Dashboard | Google Looker Studio (in progress) |
-| Sources | OpenFDA API, ClinicalTrials.gov v2 API, NewsAPI |
+|-------|------------|
+| **Language** | Python 3.11 |
+| **NLP Model** | FinBERT (`ProsusAI/finbert`) via HuggingFace Transformers |
+| **Data Warehouse** | Google BigQuery |
+| **Compute** | Google Cloud Run (Dockerfile-based, 2GB memory) |
+| **Scheduler** | Google Cloud Scheduler |
+| **Dashboard** | Google Looker Studio |
+| **Data Sources** | OpenFDA API · ClinicalTrials.gov v2 API · NewsAPI |
 
-## Local Setup
+---
+
+## 💻 Local Setup
 
 ```bash
 # 1. Clone and install dependencies
@@ -68,7 +143,7 @@ python -m src.main
 python scripts/check_bq.py
 ```
 
-## Trigger the Pipeline Manually
+### Trigger Manually
 
 ```bash
 curl -X POST \
@@ -76,30 +151,48 @@ curl -X POST \
   https://pharma-pipeline-138103340271.us-central1.run.app
 ```
 
-Returns a JSON summary: `{'fetched': N, 'scored': N, 'inserted': N, 'errors': 0}`
+Returns: `{'fetched': N, 'scored': N, 'inserted': N, 'errors': 0}`
 
-## Project Structure
+---
+
+## 📂 Project Structure
 
 ```
 pharma-intelligence-tracker/
-├── Dockerfile                  # Cloud Run container definition (FinBERT baked in)
+├── Dockerfile                  # Cloud Run container (FinBERT baked in at build time)
 ├── main.py                     # WSGI entry point for Cloud Run
-├── schema/bq_schema.json       # BigQuery table schema (8 columns)
+├── schema/
+│   └── bq_schema.json          # BigQuery table schema (8 columns)
 ├── src/
 │   ├── fetchers.py             # Data fetchers for 3 sources
 │   ├── bigquery_client.py      # BQ schema, dedup-before-insert, row insertion
 │   ├── sentiment.py            # FinBERT wrapper (module-level model load)
 │   └── main.py                 # Pipeline orchestrator
-├── deploy/                     # Flat-copy for Cloud Functions deployment (alternative)
 └── scripts/
     ├── test_run.py             # Local smoke test (no BQ writes)
     └── check_bq.py             # Verify rows in BigQuery
 ```
 
-## Key Design Decisions
+---
 
-- **Dedup before insert** — `get_existing_ids()` queries BigQuery for existing IDs before calling `insert_rows_json`, not after. Checking after means duplicates are already in the table.
-- **FinBERT at module level** — the model loads once on container startup, not once per record. Reloading per record would add ~6 minutes of latency per run.
-- **Always read `insert_rows_json` return value** — the BigQuery client does not raise exceptions on row-level write errors. It returns a list of error dicts silently.
-- **Every fetcher returns `[]` on failure** — never `None`, never a raised exception. Downstream code concatenates all three lists; `None` would crash with `TypeError`.
-- **FinBERT baked into Docker image** — model weights (~440MB) are downloaded at build time, not at runtime. This avoids HuggingFace rate-limiting Cloud Run's shared IP on cold starts.
+## 🔑 Key Design Decisions
+
+| Decision | Why |
+|---|---|
+| **Dedup before insert** | `get_existing_ids()` queries BigQuery for existing IDs *before* `insert_rows_json`. Checking after means duplicates are already in the table. |
+| **FinBERT at module level** | Model loads once on container startup. Reloading per record would add ~6 minutes of latency per run. |
+| **Read `insert_rows_json` return value** | BigQuery client does not raise exceptions on row-level write errors — it returns a list of error dicts silently. |
+| **Fetchers return `[]` on failure** | Never `None`, never a raised exception. Downstream code concatenates all three lists; `None` crashes with `TypeError`. |
+| **FinBERT baked into Docker image** | Model weights (~440MB) downloaded at build time. Avoids HuggingFace rate-limiting Cloud Run's shared IP on cold starts. |
+
+---
+
+## 📄 License
+
+MIT
+
+---
+
+<div align="center">
+  <sub>FinBERT · Google Cloud Run · BigQuery · Looker Studio · Deployed & Running</sub>
+</div>
